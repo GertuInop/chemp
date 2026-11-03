@@ -142,4 +142,3 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
         self.btnAutoOnOff.clicked.connect(self.auto_sorts)
 
         self.add_log('Приложение запущено')
-awdwadad
