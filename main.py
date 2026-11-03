@@ -300,19 +300,16 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
             self.add_log('Конвейер остановлен')
 
     def gripper_on_off(self):
-        if self.onOff:
-            if self.gripper == 0:
-                self.robot.toolON()
-                self.gripper = 1
-                self.btnGripperOnOff.setText('Off')
-                self.add_log('Схват активен')
-            elif self.gripper == 1:
-                self.robot.toolOFF()
-                self.gripper = 0
-                self.btnGripperOnOff.setText('On')
-                self.add_log('Схват выключен')
-        else:
-            return QtWidgets.QMessageBox.warning(self, 'Error', 'Робот не запущен')
+        if self.gripper == 0:
+            self.robot.toolON()
+            self.gripper = 1
+            self.btnGripperOnOff.setText('Off')
+            self.add_log('Схват активен')
+        elif self.gripper == 1:
+            self.robot.toolOFF()
+            self.gripper = 0
+            self.btnGripperOnOff.setText('On')
+            self.add_log('Схват выключен')
 
     def liner_track(self, val):
         pos = val / 10.0
