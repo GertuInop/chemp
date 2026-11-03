@@ -35,7 +35,6 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
         self.btnToStart.clicked.connect(self.to_start)
         self.btnStop.clicked.connect(self.set_stop)
         self.btnStartConveyer.clicked.connect(self.start_conveyer)
-        self.btnToStart.clicked.connect(self.to_start)
         self.btnManualActive.clicked.connect(self.m_active)
         self.btnManualCart.clicked.connect(self.m_cart)
         self.btnManualJoint.clicked.connect(self.m_joint)
@@ -209,17 +208,17 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
                 self.lamp_timer.start(300)
                 self.pose.start(500)
                 self.motors.start(500)
-                self.manage_interface()
                 self.onOff = True
                 self.btnOnOff.setText('Off')
                 self.add_log('Робот подключен')
             else:
                 self.to_start()
-                self.manage_interface()
                 QtCore.QTimer.singleShot(7000, self.shutdown)
     
     def shutdown(self):
         self.lamp_timer.stop()
+        self.robot.addConveyerState(0)
+        self.robot.conveyer_stop()
         self.pose.stop()
         self.motors.stop()
         self.jointTimer.stop()
@@ -227,11 +226,10 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
         self.robot.reset()
         self.robot.disengage()
         self.lamp.setLamp('0000')
-        for i in self.indicators[:4]: i.setStyleSheet('')
-        self.sldLinerTrack.setEnabled(False)
+        for i in self.indicators: i.setStyleSheet('')
         self.onOff = False
         self.pause = False
-        self.manualActive
+        self.manualActive = False
         self.btnOnOff.setText('On')
         self.btnPause.setText('Pause')
         self.add_log('Робот выключен')
@@ -247,6 +245,94 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
         else:
             self.in_transition = False
             self.add_log('Робот на стартовой позиции')
+
+    def set_pause(self):
+        if not self.pause:
+            self.robot.pause()
+            self.pause = True
+            self.btnPause.setText('Play')
+            self.add_log('Пауза')
+        else:
+            self.robot.play()
+            self.pause = False
+            self.btnPause.setText('Pause')
+            self.add_log('Робот продолжает выполнять программу')
+        
+    def set_stop(self):
+        self.robot.addConveyerState(0)
+        self.robot.conveyer_stop()
+        self.lamp_timer.stop()
+        self.robot.stop()
+        for i in self.indicators: i.setStyleSheet('')
+        self.indicators[3].setStyleSheet('background-color: red')
+        self.lamp.setLamp('0001')
+        self.onOff = False
+        self.pause = False
+        self.btnOnOff.setText('On')
+        self.btnPause.setText('Pause')
+        self.add_e_log('Робот аварийно остановлен')
+
+    def start_conveyer(self):
+        if not self.conveyer:
+            self.robot.conveyer_start()
+            self.robot.addConveyerState(1)
+            self.conveyer = True
+            self.btnStartConveyer.setText('Stop Conveyer')
+            self.add_log('Конвейер запущен')
+        else:
+            self.robot.conveyer_stop()
+            self.robot.addConveyerState(0)
+            self.conveyer = False
+            self.btnStartConveyer.setText('Start Conveyer')
+            self.add_log('Конвейер остановлен')
+
+    def m_active(self):
+        if not self.manualActive:
+            self.btnManualCart.setEnabled(True)
+            self.btnManualJoint.setEnabled(True)
+            self.manualActive = True
+        else:
+            self.btnManualCart.setEnabled(False)
+            self.btnManualJoint.setEnabled(False)
+            self.manualActive = False
+
+    def m_cart(self):
+        if not self.cartActive:
+            self.robot.manualCartMode()
+            self.cartTimer.start(150)
+            self.cartActive = True
+            self.update_cart()
+            self.btnManualJoint.setEnabled(False)
+            self.btnManualCart.setText('Stop Cart')
+            self.add_log('Ручной режим Декарта включён')
+        else:
+            self.cartTimer.stop()
+            self.cartActive = False
+            self.update_cart()
+            self.btnManualJoint.setEnabled(True)
+            self.btnManualCart.setText('Manual Cart')
+            self.add_log('Ручной режим Декарта выключён')
+    
+    def m_joint(self):
+        if not self.jointActive:
+            self.robot.manualJointMode()
+            self.jointTimer.start(25)
+            self.jointActive = True
+            self.update_joint()
+            self.btnManualCart.setEnabled(False)
+            self.btnManualJoint.setText('Stop Joint')
+            for sld in self.sliders:
+                sld.setEnabled(True)
+            self.add_log('Ручной режим Сочленений включён')
+        else:
+            self.jointTimer.stop()
+            self.jointActive = False
+            self.update_joint()
+            self.btnManualCart.setEnabled(True)
+            self.btnManualJoint.setText('Manual Joint')
+            for sld in self.sliders:
+                sld.setEnabled(False)
+            self.add_log('Ручной режим Сочленений выключён')
 
     def closeEvent(self, event):
         if self.onOff:
