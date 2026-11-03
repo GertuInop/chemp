@@ -63,7 +63,7 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
         self.logs = []
         self.e_logs = []
         self.log_model = QtCore.QStringListModel()
-        self.lvLogs.setModel(self.log_model)
+        self.LVLogs.setModel(self.log_model)
 
         self.pose = QtCore.QTimer()
         self.pose.timeout.connect(self.update_pose)
@@ -75,6 +75,10 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
         self.cartTimer.timeout.connect(self.update_cart)
         self.jointTimer = QtCore.QTimer()
         self.jointTimer.timeout.connect(self.update_joint)
+
+        self.current_code = None
+        self.lamp_timer = QtCore.QTimer()
+        self.lamp_timer.timeout.connect(self.update_code)
 
         # Модуль Б
         self.processing_active = False
@@ -142,3 +146,126 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
         self.btnAutoOnOff.clicked.connect(self.auto_sorts)
 
         self.add_log('Приложение запущено')
+
+    # Модуль А
+    def add_log(self, msg: str) -> None:
+        time = datetime.datetime.now().strftime('[%H:%M:%S]')
+        log = f'{time} - {msg}'
+        self.logs.append(log)
+        self.log_model.setStringList(self.logs)
+    
+    def add_e_log(self, msg: str) -> None:
+        time = datetime.datetime.now().strftime('[%H:%M:%S]')
+        log = f'{time} - {msg}'
+        self.logs.append(log)
+        self.e_logs.append(log)
+        self.log_model.setStringList(self.logs)
+
+    def set_code(self, code: str) -> None:
+        if self.current_code != code:
+            self.current_code = code
+        try:
+            self.lamp.setLamp(code)
+        except:
+            return
+        
+        for i in self.indicators: i.setStyleSheet('')
+
+        match code:
+            case '1000': self.indicators[0].setStyleSheet('background-color: blue')
+            case '0100': self.indicators[1].setStyleSheet('background-color: green')
+            case '0010': self.indicators[2].setStyleSheet('background-color: yellow')
+            case '0001': self.indicators[3].setStyleSheet('background-color: red')
+        
+        if self.people_detected: self.indicators[4].setStyleSheet('background-color: red')
+        if self.cat1: self.indicators[5].setStyleSheet('background-color: red')
+        if self.cat2: self.indicators[6].setStyleSheet('background-color: red')
+        if self.cat3: self.indicators[7].setStyleSheet('background-color: red')
+
+    def compute_code(self):
+        try:
+            state = self.robot.getActualStateOut()
+            if state == InterpreterStates.PROGRAM_STOP_S.value:
+                return '0001'
+            if state == InterpreterStates.PROGRAM_PAUSE_S.value:
+                return '0010'
+            if self.waiting_for_slots:
+                return '1000'
+            if self.processing_active or state == InterpreterStates.IN_TRANSITION.value:
+                return '0100'
+            return '1000'
+        except:
+            return '1000'
+    
+    def update_code(self):
+        code = self.compute_code()
+        self.set_code(code)
+
+    def on_off(self):
+        if self.robot.connect():
+            if not self.onOff:
+                self.robot.engage()
+                self.robot.reset()
+                self.lamp_timer.start(300)
+                self.pose.start(500)
+                self.motors.start(500)
+                self.manage_interface()
+                self.onOff = True
+                self.btnOnOff.setText('Off')
+                self.add_log('Робот подключен')
+            else:
+                self.to_start()
+                self.manage_interface()
+                QtCore.QTimer.singleShot(7000, self.shutdown)
+    
+    def shutdown(self):
+        self.lamp_timer.stop()
+        self.pose.stop()
+        self.motors.stop()
+        self.jointTimer.stop()
+        self.cartTimer.stop()
+        self.robot.reset()
+        self.robot.disengage()
+        self.lamp.setLamp('0000')
+        for i in self.indicators[:4]: i.setStyleSheet('')
+        self.sldLinerTrack.setEnabled(False)
+        self.onOff = False
+        self.pause = False
+        self.manualActive
+        self.btnOnOff.setText('On')
+        self.btnPause.setText('Pause')
+        self.add_log('Робот выключен')
+
+    def to_start(self):
+        state = self.robot.getActualStateOut()
+        if not self.in_transition:
+            self.robot.moveToInitialPose()
+            self.in_transition = True
+        elif state == InterpreterStates.IN_TRANSITION:
+            QtCore.QTimer.singleShot(200, self.to_start)
+            return
+        else:
+            self.in_transition = False
+            self.add_log('Робот на стартовой позиции')
+
+    def closeEvent(self, event):
+        if self.onOff:
+            self.to_start()
+            self.lamp_timer.stop()
+        self.add_log('Приложение завершает работу')
+        agreed = QtWidgets.QMessageBox.question(self, 'Accept', 'Вы хотите сохранить логи?')
+        if agreed == 16384:
+            self.save_logs()
+        time.sleep(1)
+        self.robot.disengage()
+        self.lamp.setLamp('0000')
+        event.accept()
+
+def main():
+    app = QtWidgets.QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
+
+if __name__ == '__main__':
+    main()
