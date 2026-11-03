@@ -234,6 +234,19 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
         self.btnPause.setText('Pause')
         self.add_log('Робот выключен')
 
+    def closeEvent(self, event):
+            if self.onOff:
+                self.to_start()
+                self.lamp_timer.stop()
+            self.add_log('Приложение завершает работу')
+            agreed = QtWidgets.QMessageBox.question(self, 'Accept', 'Вы хотите сохранить логи?')
+            if agreed == 16384:
+                self.save_logs()
+            time.sleep(1)
+            self.robot.disengage()
+            self.lamp.setLamp('0000')
+            event.accept()
+
     def to_start(self):
         state = self.robot.getActualStateOut()
         if not self.in_transition:
@@ -286,6 +299,33 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
             self.btnStartConveyer.setText('Start Conveyer')
             self.add_log('Конвейер остановлен')
 
+    def gripper_on_off(self):
+        if self.onOff:
+            if self.gripper == 0:
+                self.robot.toolON()
+                self.gripper = 1
+                self.btnGripperOnOff.setText('Off')
+                self.add_log('Схват активен')
+            elif self.gripper == 1:
+                self.robot.toolOFF()
+                self.gripper = 0
+                self.btnGripperOnOff.setText('On')
+                self.add_log('Схват выключен')
+        else:
+            return QtWidgets.QMessageBox.warning(self, 'Error', 'Робот не запущен')
+
+    def liner_track(self, val):
+        pos = val / 10.0
+        try:
+            self.robot.addLinearTrackMove(pos)
+            self.add_log(f'Линейный трек равен: {pos:.1}')
+        except:
+            return QtWidgets.QMessageBox.warning(self, 'Error', 'Ошибка изменения линейного трека')
+
+    def sld_to_zero(self):
+        for sld in self.sliders:
+            sld.setValue(0)
+
     def m_active(self):
         if not self.manualActive:
             self.btnManualCart.setEnabled(True)
@@ -334,18 +374,126 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
                 sld.setEnabled(False)
             self.add_log('Ручной режим Сочленений выключён')
 
-    def closeEvent(self, event):
-        if self.onOff:
-            self.to_start()
-            self.lamp_timer.stop()
-        self.add_log('Приложение завершает работу')
-        agreed = QtWidgets.QMessageBox.question(self, 'Accept', 'Вы хотите сохранить логи?')
-        if agreed == 16384:
-            self.save_logs()
-        time.sleep(1)
-        self.robot.disengage()
-        self.lamp.setLamp('0000')
-        event.accept()
+    def update_cart(self):
+        v1 = self.s1.value() / 500.0
+        v2 = self.s2.value() / 500.0
+        v3 = self.s3.value() / 500.0
+        v = [v1, v2, v3, 0.0, 0.0, 0.0]
+        self.robot.setCartesianVelocity(v)
+
+    def update_joint(self):
+        v1 = self.s1.value() / 500.0
+        v2 = self.s2.value() / 500.0
+        v3 = self.s3.value() / 500.0
+        v4 = self.s4.value() / 500.0
+        v5 = self.s5.value() / 500.0
+        v6 = self.s6.value() / 500.0
+        v = [v1, v2, v3, v4, v5, v6]
+        self.robot.setJointVelocity(v)
+
+    def update_pose(self):
+        pose = self.robot.getToolPosition()
+
+        self.twActualToolPose.setItem(0, 0, QtWidgets.QTableWidgetItem(str(round(pose[0], 3))))
+        self.twActualToolPose.setItem(0, 1, QtWidgets.QTableWidgetItem(str(round(pose[1], 3))))
+        self.twActualToolPose.setItem(0, 2, QtWidgets.QTableWidgetItem(str(round(pose[2], 3))))
+        self.twActualToolPose.setItem(0, 3, QtWidgets.QTableWidgetItem(str(self.gripper)))
+
+    def update_motors(self):
+        ticks = self.robot.getMotorPositionTick()
+        radians = self.robot.getMotorPositionRadians()
+        degrees = [math.degrees(r) for r in radians]
+        temperature = self.robot.getActualTemperature()
+
+        for i in range(6):
+            self.twMotorsStates.setItem(0, i, QtWidgets.QTableWidgetItem(str(round(ticks[i], 3))))
+        for i in range(6):
+            self.twMotorsStates.setItem(1, i, QtWidgets.QTableWidgetItem(str(round(radians[i], 3))))
+        for i in range(6):
+            self.twMotorsStates.setItem(2, i, QtWidgets.QTableWidgetItem(str(round(degrees[i], 3))))
+        for i in range(6):
+            self.twMotorsStates.setItem(3, i, QtWidgets.QTableWidgetItem(str(round(temperature[i], 3))))
+
+    def save_logs(self):
+        filename = self.leLogsPath.text().strip()
+        if not filename:
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, 'Logs saving', QtCore.QDir.homePath(), 'Text Files (*.txt);; All Files (*)'
+            )
+            if not filename:
+                return self.add_log('Ошибка сохранения логов')
+    
+        filename = filename if filename.endswith('.txt') else f'{filename}.txt'
+        self.leLogsPath.setText(filename)
+
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(self.logs) + '\n')
+            self.add_log(f'Логи сохранены в пути: {filename}')
+        except:
+            self.add_log('Ошибка сохранения логов')
+
+    def save_e_logs(self):
+        filename = self.leELogsPath.text().strip()
+        if not filename:
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, 'Logs saving', QtCore.QDir.homePath(), 'Text Files (*.txt);; All Files (*)'
+            )
+            if not filename:
+                return self.add_log('Ошибка сохранения логов')
+    
+        filename = filename if filename.endswith('.txt') else f'{filename}.txt'
+        self.leELogsPath.setText(filename)
+
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(self.e_logs) + '\n')
+            self.add_log(f'Аварийные логи сохранены в пути: {filename}')
+        except:
+            self.add_log('Ошибка сохранения логов')
+
+    def save_stats(self):
+        filename = self.leStatsPath.text().strip()
+        if not filename:
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, 'Select folder and name your file', QtCore.QDir.homePath(), 'Excel Files (*.xlsx);; All Files (*)'
+            )
+            if not filename:
+                return QtWidgets.QMessageBox.warning(self, 'Error', 'Назовите свой файл')
+        
+        filename = filename if filename.endswith('.xlsx') else f'{filename}.xlsx'
+        self.leStatsPath.setText(filename)
+
+        rows = [
+            [self.sb11.value(), self.sb21.value(), self.leTime31.text().strip()],
+            [self.sb12.value(), self.sb22.value(), self.leTime32.text().strip()],
+            [self.sb13.value(), self.sb23.value(), self.leTime33.text().strip()],
+            [self.sb1.value(), self.leTime34.text().strip()],
+        ]
+
+        try:
+            from openpyxl import Workbook
+            wb = Workbook(); ws = wb.active
+            for r in rows: ws.append(r)
+            wb.save(filename)
+            self.add_log(f'Статистика сохранена по пути {filename}')
+        except:
+            QtWidgets.QMessageBox.warning(self, 'Error', 'Ошибка сохранения статистики')
+
+    def save_stats_1(self):
+        time = datetime.datetime.now().strftime('%H:%M:%S')
+        self.leTime31.setText(time)
+        self.save_stats()
+    
+    def save_stats_2(self):
+        time = datetime.datetime.now().strftime('%H:%M:%S')
+        self.leTime32.setText(time)
+        self.save_stats()
+
+    def save_stats_3(self):
+        time = datetime.datetime.now().strftime('%H:%M:%S')
+        self.leTime33.setText(time)
+        self.save_stats()
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
