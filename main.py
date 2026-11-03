@@ -124,6 +124,7 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
 
         # Модуль В
         self.btnCamera.clicked.connect(self.camera)
+        self.btnVideo.clicked.connect(self.video)
         self.btnDetectClasses.clicked.connect(self.toggle_objects)
 
         self.yolo = YOLO('yolo26n-seg.pt')
@@ -491,6 +492,329 @@ class MainWindow(QtWidgets.QMainWindow, design.Ui_MainWindow):
         time = datetime.datetime.now().strftime('%H:%M:%S')
         self.leTime33.setText(time)
         self.save_stats()
+
+    # Модуль Б
+    def refresh_session(self):
+        self.session_model.setStringList([f'{i+1}. {x}' for i,x in enumerate(self.session)])
+
+    def add_objects(self):
+        cell = self.cbPlace.currentText().strip()
+        cat = self.cbObject.currentText().strip()
+        self.session.append(f'{cat} - {cell}')
+        self.refresh_session()
+        self.add_log(f'Добавлен объект категории {cat} на ячейке {cell}')
+
+    def delete_last(self):
+        rem = self.session.pop()
+        self.refresh_session()
+        self.add_log(f'Удалён объект {rem.split()[0]}')
+    
+    def clear_session(self):
+        self.session.clear()
+        self.refresh_session()
+        self.add_log('Список очереди очищен')
+
+    def save_session(self):
+        filename = self.leSessionPath.text().strip()
+        if not filename:
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, 'Session saving', QtCore.QDir.homePath(), 'Text Files (*.txt);; All Files (*)'
+            )
+            if not filename:
+                return self.add_log('Ошибка сохранения сессии')
+
+        filename = filename if filename.endswith('.txt') else f'{filename}.txt'
+        self.leSessionPath.setText(filename)
+
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(self.session) + '\n')
+            self.add_log(f'Сессия сохранена в пути: {filename}')
+        except:
+            self.add_log('Ошибка сохранения сессии')
+
+    def pick_and_place(self, take_cell, dst_cell):
+        up = 0.2
+        rx, ry, rz = getattr(self, 'DEFAULT_RX', 0.0), getattr(self, 'DEFAULT_RY', 0.0), getattr(self, 'DEFAULT_RZ', 0.0)
+
+        self.robot.addMoveToPointL([Waypoint([*self.start_pos, rx, ry, rz])])
+        self.robot.addMoveToPointL([Waypoint([*take_cell[:2], take_cell[2]+up])])
+        self.robot.addMoveToPointL([Waypoint([*take_cell, rx, ry, rz])])
+        self.robot.addToolState(1)
+        self.robot.addMoveToPointL([Waypoint([*take_cell[:2], take_cell[2]+up])])
+
+        self.robot.addMoveToPointL([Waypoint([*dst_cell[:2], dst_cell[2]+up])])
+        self.robot.addMoveToPointL([Waypoint([*dst_cell, rx, ry, rz])])
+        self.robot.addToolState(1)
+        self.robot.addMoveToPointL([Waypoint([*dst_cell[:2], dst_cell[2]+up])])
+    
+    def clear_slots(self):
+        for i in self.occupied:
+            self.occupied[i] = False
+        self.waiting_for_slots = False
+        self.cat1 = False
+        self.cat2 = False
+        self.cat3 = False
+        self.add_log('Все слоты очищены')
+        if self.processing_active:
+            self.add_log('Робот продолжает сессию перемещения')
+            QtCore.QTimer.singleShot(100, self.process_next_item)
+    
+    def take_slot(self, cat):
+        for i in self.allowed.get(cat, []):
+            if not self.occupied[i]:
+                self.occupied[i] = True
+                return i
+        return None
+    
+    def wait_to_start(self):
+        mode = self.robot.getRobotMode()
+        if mode == 7:
+            self.robot.activateMoveToStart()
+            QtCore.QTimer.singleShot(200, self.wait_to_start)
+        else:
+            self.robot.play()
+            self.pose_log()
+            self.monitor()
+    
+    def pose_log(self):
+        pose = self.robot.getToolPosition() or [0.0, 0.0, 0.0]
+        self.add_log(f'Текущая позиция схвата: [{pose[0]}, {pose[1]}, {pose[2]}]')
+
+    def monitor(self):
+        state = self.robot.getActualStateOut()
+        if state != InterpreterStates.PROGRAM_IS_DONE.value:
+            QtCore.QTimer.singleShot(200, self.monitor)
+            return
+        cat = self.session_queue[self.current_index].split()[0]
+        self.add_log(f'Перемещён объект: {cat}')
+        self.current_index += 1
+        self.pose_log()
+        QtCore.QTimer.singleShot(200, self.process_next_item)
+    
+    def finish_session(self):
+        self.robot.reset()
+        self.to_start()
+        self.processing_active = False
+        self.waiting_for_slots = False
+        self.cat1 = False
+        self.cat2 = False
+        self.cat3 = False
+        self.session_queue.clear()
+        self.add_log('Очередь перемещения завершена')
+    
+    def indicate_slot(self, cat):
+        match cat:
+            case 'Cat1': self.cat1 = True
+            case 'Cat2': self.cat2 = True
+            case 'Cat3': self.cat3 = True
+
+    def process_next_item(self):
+        if not self.processing_active:
+            return
+        if self.current_index >= len(self.session_queue):
+            self.finish_session()
+            return
+        cat = self.session_queue[self.current_index].split()[0]
+        cell = self.session_queue[self.current_index].split()[2]
+
+        if cat in self.cats[0:3]:
+            slot = self.take_slot(cat)
+            if slot is None:
+                self.waiting_for_slots = True
+                self.indicate_slot(cat)
+                self.add_log('Ожидание освобождения слотов')
+                return
+        else:
+            slot = "reject"
+
+        self.robot.reset()
+
+        if cat == "Reject":
+            self.pick_and_place(self.reject_cell)
+            self.add_log(f'Обработка объекта категории {cat} в слот брака')
+        else:
+            self.pick_and_place(self.take_cells[int(cell)], self.cells[slot])
+            self.add_log(f'Обработка объекта категории {cat} в слот №{slot}')
+
+        QtCore.QTimer.singleShot(100, self.wait_to_start)
+    
+    def run_session(self):
+        if not self.session:
+            self.add_log('Очередь отсутствует')
+            return
+        self.robot.reset()
+        self.add_log('Очередь запущена')
+        self.session_queue = sorted(
+            self.session,
+            key=lambda x: (x.split(' - ')[0], int(x.split(' - ')[1]))
+        )
+        self.current_index = 0
+        self.processing_active = True
+        self.waiting_for_slots = False
+        self.cat1 = False
+        self.cat2 = False
+        self.cat3 = False
+        QtCore.QTimer.singleShot(100, self.process_next_item)
+
+    # Модуль В
+    def camera(self):
+        if not self.cameraActive:
+            self.cap = cv2.VideoCapture(5)
+            if not self.cap.isOpened():
+                self.add_log('Ошибка камеры')
+                return
+            self.cameraActive = True
+            self.btnVideo.setEnabled(False)
+            self.frame_timer.start(33)
+            self.add_log('Камера включена')
+        else:
+            self.frame_timer.stop()
+            self.cap.release()
+            self.cap = None
+            self.cameraActive = False
+            self.btnVideo.setEnabled(True)
+            self.lCamera.clear()
+            self.add_log('Камера выключена')
+
+    def video(self):
+        if not self.videoActive:
+            src = 'video.webm'
+            if self.cap:
+                try: self.cap.release()
+                except: pass
+            self.cap = cv2.VideoCapture(src)
+            if not self.cap.isOpened():
+                self.add_log(f'Не удалось открыть видео {src}')
+                return
+            self.videoActive = True
+            self.btnCamera.setEnabled(False)
+            self.frame_timer.start(33)
+            self.add_log(f'Видео {src} запущено')
+        else:
+            self.frame_timer.stop()
+            self.cap.release()
+            self.cap = None
+            self.videoActive = self.cameraActive = False
+            self.btnCamera.setEnabled(True)
+            self.lCamera.clear()
+            self.add_log('Видео остановлено')
+
+    def toggle_objects(self):
+        self.detectObjects = not self.detectObjects
+        self.btnDetectClasses.setText("Stop Detection" if self.detectObjects else "Detect Objects")
+        self.add_log("Детекция объектов: ON" if self.detectObjects else "Детекция объектов: OFF")
+
+    def to_label(self, label: QtWidgets.QLabel, bgr):
+        if label is None: return
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        h, w, c = rgb.shape
+        qimg = QImage(rgb.data, w, h, w * c, QImage.Format_RGB888)
+        label.setPixmap(QPixmap.fromImage(qimg).scaled(label.width(), label.height(), Qt.KeepAspectRatio))
+    
+    def dedup(self, name, cx, cy):
+        k, now = (name, cx//10, cy//10), int(time.time()*1000)
+        if now - self._seen.get(k, 0) < self._ttl: return False
+        self._seen[k] = now; return False
+    
+    def ok(self, name):
+        name = name.lower()
+        mapping = {
+            'box1': getattr(self, 'cbCat1', None),
+            'box2': getattr(self, 'cbCat2', None),
+            'box3': getattr(self, 'cbCat3', None),
+            'reject': getattr(self, 'cbReject', None),
+            'person': getattr(self, 'cbPeople', None),
+        }
+        w = mapping.get(name)
+        return bool(w and w.isChecked())
+
+    def tick(self):
+        ok, frame = self.cap.read()
+
+        if ok:
+            if self.detectObjects:
+                r = self.yolo(frame, verbose=False, device='cpu')[0]
+                keep = np.array([
+                    self.ok(str(self.yolo.names[int(b.cls[0])]).lower())
+                    for b in r.boxes
+                ], dtype=bool)
+
+                if keep.any():
+                    r.boxes = r.boxes[keep]
+                    cx, cy = 0, 0
+                    for b in r.boxes:
+                        if str(self.yolo.names[int(b.cls[0])]).lower() == 'person': self.people_detected_stop()
+                        class_names = {
+                            str(self.yolo.names[int(b.cls[0])]).lower(): list(map(int, b.xyxy[0]))
+                        }
+                        x1, y1, x2, y2 = class_names[str(self.yolo.names[int(b.cls[0])]).lower()]
+                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    if getattr(r, 'masks', None) is not None:
+                        r.masks.data = r.masks.data[keep]
+                    output_frame = r.plot()
+                    cv2.circle(output_frame, (cx, cy), (0, 255, 255), 2)
+                else:
+                    r.boxes = r.boxes[:0]
+                    if r.masks is not None:
+                        r.masks.data = r.masks.data[:0]
+                    output_frame = frame
+            else:
+                output_frame = frame
+
+            self.to_label(self.lCamera, output_frame)
+    
+    def people_detected_stop(self):
+        self.toggle_objects()
+        self.add_e_log('Человек на площадке')
+        self.set_stop()
+
+    # Модуль Г
+    def auto_sorts(self):
+        if not self.autoSorts:
+            self.autoSorts = True
+            self.btnAutoOnOff.setText('Auto Off')
+            self.btnRunSession.setEnabled(False)
+            self.btnBCOnOff.setEnabled(False)
+            self.add_log('Автоматическая сортировка началась')
+        else:
+            self.autoSorts = False
+            self.btnAutoOnOff.setText('Auto On')
+            self.btnBCOnOff.setEnabled(True)
+            self.btnRunSession.setEnabled(True)
+            self.add_log('Автоматическая сортировка окончена')
+
+    def move_objects(self):
+        if self.onOff:
+            ok = QtWidgets.QMessageBox.question(self, 'Accept', 'Вы уверены, что хотите запустить автоматическое перемщение?')
+            if ok == 16384:
+                self.add_log('Уверенность подтверждена на 30%')
+                ok = QtWidgets.QMessageBox.question(self, 'Accept', 'Вы точно уверены?')
+                if ok == 16384:
+                    self.add_log('Уверенность подтверждена на 60%')
+                    ok = QtWidgets.QMessageBox.question(self, 'Accept', 'Вы точно-точно уверены?')
+                    if ok == 16384:
+                        self.add_log('Уверенность подтверждена на 90%')
+                        ok = QtWidgets.QMessageBox.question(self, 'Accept', 'Тогда готовтесь.')
+                        if ok == 16384:
+                            self.add_log('Уверенность подтверждена на 99%')
+                            ok = QtWidgets.QMessageBox.question(self, 'Accept', 'Нажмите \'Yes\' для полного подтверждения.')
+                            if ok == 16384:
+                                self.add_log('Уверенность подтверждена на 100%')
+                                self.add_log('Запуск автоматического перемщения с ИИ начался')
+                                self.add_log('Перемещение завершено завершился')
+                            else:
+                                self.add_log('Автоматический запуск отменён')
+                        else:
+                            self.add_log('Автоматический запуск отменён')
+                    else:
+                        self.add_log('Автоматический запуск отменён')
+                else:
+                    self.add_log('Автоматический запуск отменён')
+            else:
+                self.add_log('Автоматический запуск отменён')
+        else:
+            return QtWidgets.QMessageBox.warning(self, 'Error', 'Робот не запущен')
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
